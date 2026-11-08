@@ -226,6 +226,89 @@ async function viewReview() {
       <button type="button" class="btn danger" data-del="${d.id}">삭제</button></div></div>`)}</div>`;
 }
 
+// ---------- 수집 계정 관리 ----------
+const KIND = { influencer: '인플루언서', brand: '브랜드', unknown: '미확인' };
+const ACC_TABS = [['tracked', '추적 중'], ['candidate', '후보'], ['ignored', '제외'], ['unreachable', '조회 불가']];
+let accTab = 'tracked';
+let pollTimer = null;
+
+function ago(sqlTime) {
+  if (!sqlTime) return '아직 안 함';
+  const ms = Date.now() - Date.parse(sqlTime.replace(' ', 'T') + (sqlTime.endsWith('Z') ? '' : 'Z'));
+  const m = Math.round(ms / 60000);
+  return m < 1 ? '방금' : m < 60 ? `${m}분 전` : m < 1440 ? `${Math.round(m / 60)}시간 전` : `${Math.round(m / 1440)}일 전`;
+}
+
+function collectStatus(c) {
+  if (!c.configured) {
+    return html`<div class="step"><h3>인스타그램 API 연결이 필요해요</h3>
+      <p class="hint">서버에 <b>IG_USER_ID</b>(내 인스타 프로페셔널 계정 ID)와 <b>IG_ACCESS_TOKEN</b>을 설정하면, 아래 계정들의 최근 게시물에서 공구를 자동으로 모으고 연관 계정을 계속 찾아요. 설정 방법은 <code>docs/instagram-setup.md</code>에 있어요.</p></div>`;
+  }
+  const l = c.last;
+  return html`<div class="step">
+    <div class="row between"><h3>자동 수집</h3>
+      <button type="button" class="btn primary" data-collect ${c.running ? 'disabled' : ''}>${c.running ? '수집 중…' : '지금 수집'}</button></div>
+    ${l ? html`<p class="hint" style="margin:0">마지막 수집 ${ago(l.finished)} · API ${l.calls ?? 0}회 · 공구 게시 <b>${l.deals_added ?? 0}</b>건 · 검토 대기 ${l.deals_pending ?? 0}건 · 새 후보 ${l.candidates_found ?? 0}개 · 자동 추적 ${l.auto_tracked?.length ?? 0}개</p>
+      ${l.stopped ? html`<p class="form-error" style="margin:0">중단됨: ${l.stopped}</p>` : ''}
+      ${l.errors?.length ? html`<details><summary class="hint">계정 오류 ${l.errors.length}건</summary><div class="hint">${l.errors.map((e) => html`<div>${e}</div>`)}</div></details>` : ''}`
+    : html`<p class="hint" style="margin:0">아직 수집하지 않았어요. 서버는 주기적으로(기본 2시간) 자동 수집해요.</p>`}
+    ${c.running && c.log.length ? html`<div class="hint">${c.log.slice(-5).map((x) => html`<div>${x}</div>`)}</div>` : ''}
+  </div>`;
+}
+
+function accountRow(a) {
+  const actions = ACC_TABS.filter(([st]) => st !== a.status && st !== 'unreachable')
+    .map(([st, label]) => html`<button type="button" class="btn ghost" data-acc="${a.handle}" data-acc-status="${st}">${st === 'tracked' ? '추적' : st === 'candidate' ? '후보로' : '제외'}</button>`);
+  return html`<article class="card">
+    <div class="row between">
+      <div class="row">${handleLink(a.handle)}<span class="badge b-cat">${KIND[a.kind] || a.kind}</span>${a.name ? html`<span class="meta">${a.name}</span>` : ''}</div>
+      <span class="meta">점수 ${a.score}</span>
+    </div>
+    ${a.bio ? html`<div class="note">${a.bio.slice(0, 140)}</div>` : ''}
+    <div class="meta">
+      ${a.followers != null ? `팔로워 ${a.followers.toLocaleString('ko-KR')} · ` : ''}최근 공구 글 ${a.gonggu_posts}개 · 등록된 공구 ${a.deal_count}건
+      ${a.discovered_from ? html` · <a href="${igProfile(a.discovered_from)}" target="_blank" rel="noopener">@${a.discovered_from}</a>에서 발견` : ' · 직접 추가'}
+      ${a.mention_count > 1 ? ` · ${a.mention_count}번 언급됨` : ''} · 확인 ${ago(a.last_checked_at)}
+    </div>
+    ${a.last_error ? html`<div class="form-error" style="font-size:13px">${a.last_error}</div>` : ''}
+    <div class="actions">${actions}</div>
+  </article>`;
+}
+
+async function viewManage() {
+  const [c, acc] = await Promise.all([api('/api/collect'), api(`/api/accounts?status=${accTab}`)]);
+  clearTimeout(pollTimer);
+  if (c.running) pollTimer = setTimeout(() => state.view === 'manage' && render(), 2500);
+  return html`<div class="form" style="max-width:none">
+    <h2>수집 계정 관리</h2>
+    <p class="help">공구를 하는 인플루언서·브랜드 계정을 넣어두면, 그 계정의 게시물에서 공구를 모으고 게시물 속 @언급을 따라가며 연관 계정을 계속 찾아요. 확실한 계정은 자동으로 추적하고, 애매한 계정은 '후보'로 모아둬요.</p>
+    ${collectStatus(c)}
+    <form class="step" id="seed-form">
+      <h3>계정 추가</h3>
+      <label class="field"><span>인스타그램 계정 (여러 개는 줄바꿈·쉼표·띄어쓰기로)</span>
+        <textarea id="seeds" style="min-height:80px" placeholder="@mom_account1&#10;@baby_brand_official&#10;https://www.instagram.com/someone/"></textarea></label>
+      <div><button class="btn primary" type="submit">추적 목록에 추가</button></div>
+    </form>
+    <div class="chips">${ACC_TABS.map(([st, label]) => html`<button type="button" class="chip" data-acc-tab="${st}" aria-pressed="${accTab === st}">${label} ${acc.counts[st] || 0}</button>`)}</div>
+    ${acc.accounts.length ? html`<div class="list cards">${acc.accounts.map(accountRow)}</div>` : html`<div class="empty">${accTab === 'tracked' ? '추적 중인 계정이 없어요. 위에서 계정을 추가해주세요.' : '해당하는 계정이 없어요.'}</div>`}
+  </div>`;
+}
+
+function bindManage() {
+  $('#seed-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const raw = $('#seeds').value;
+    const seeds = raw.split(/[\s,]+/).map(normalizeHandle).filter(Boolean);
+    if (!seeds.length) return toast('계정을 입력해주세요.');
+    try {
+      const r = await api('/api/accounts', { method: 'POST', body: { seeds } });
+      toast(`${r.added.length}개 계정을 추적 목록에 넣었어요.`);
+      accTab = 'tracked';
+      render();
+    } catch (ex) { toast(ex.message); }
+  });
+}
+
 // ---------- 제보 폼 ----------
 let suggestions = { products: [], handles: [] };
 function viewSubmit() {
@@ -343,7 +426,7 @@ async function render() {
   if (state.focus && state.focus.view !== view) state.focus = null;
   const key = state.focus?.key;
   for (const a of document.querySelectorAll('#tabs a')) a.classList.toggle('active', a.dataset.view === view);
-  $('#filters').hidden = view === 'submit' || view === 'review';
+  $('#filters').hidden = ['submit', 'review', 'manage'].includes(view);
   $('#show-ended-wrap').hidden = !(view === 'products' || view === 'accounts');
   const el = $('#view');
   const admin = Boolean(state.meta?.is_admin);
@@ -353,12 +436,14 @@ async function render() {
     else if (view === 'products') out = await viewGroups('product', key);
     else if (view === 'accounts') out = await viewGroups('influencer', key);
     else if (view === 'review') out = await viewReview();
+    else if (view === 'manage') out = await viewManage();
     else if (view === 'submit') {
       suggestions = await api('/api/suggestions').catch(() => suggestions);
       out = viewSubmit();
     } else out = await viewList('ongoing');
     el.innerHTML = out[RAW];
     if (view === 'submit') bindSubmit();
+    if (view === 'manage') bindManage();
     if (admin && view !== 'review' && state.meta?.review_required) {
       // 공개 운영 시에만 일반 화면에 삭제 버튼 노출 (로컬 모드에선 화면을 깔끔하게)
       for (const card of el.querySelectorAll('.card [data-ics]')) {
@@ -376,7 +461,8 @@ async function refreshMeta() {
   $('#c-ongoing').textContent = state.date ? '' : state.meta.counts.ongoing || '';
   $('#c-upcoming').textContent = state.date ? '' : state.meta.counts.upcoming || '';
   $('#c-pending').textContent = state.meta.counts.pending || '';
-  $('#tab-review').hidden = !(state.meta.is_admin && state.meta.review_required);
+  $('#tab-review').hidden = !(state.meta.is_admin && (state.meta.review_required || state.meta.counts.pending > 0));
+  $('#tab-manage').hidden = !state.meta.is_admin || DEMO;
   $('#sample-banner').hidden = !state.meta.has_samples;
   $('#asof').value = today();
   $('#asof-label').textContent = `${fmtDate(today())} 기준`;
@@ -455,6 +541,13 @@ document.addEventListener('click', async (e) => {
     try { await api(`/api/deals/${t.dataset.del}`, { method: 'DELETE' }); toast('삭제했어요.'); await refreshMeta(); render(); } catch (ex) { toast(ex.message); }
   } else if (t.dataset.approve) {
     try { await api(`/api/deals/${t.dataset.approve}`, { method: 'PATCH', body: { review: 'published' } }); toast('게시했어요.'); await refreshMeta(); render(); } catch (ex) { toast(ex.message); }
+  } else if (t.dataset.accTab) {
+    accTab = t.dataset.accTab;
+    render();
+  } else if (t.dataset.acc) {
+    try { await api('/api/accounts', { method: 'POST', body: { handle: t.dataset.acc, status: t.dataset.accStatus } }); toast('바꿨어요.'); render(); } catch (ex) { toast(ex.message); }
+  } else if (t.dataset.collect !== undefined) {
+    try { await api('/api/collect', { method: 'POST' }); toast('수집을 시작했어요.'); render(); } catch (ex) { toast(ex.message); }
   } else if (t.dataset.showEnded !== undefined) {
     state.showEnded = true;
     $('#show-ended').checked = true;

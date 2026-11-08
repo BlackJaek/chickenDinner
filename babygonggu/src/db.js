@@ -36,13 +36,45 @@ CREATE TABLE IF NOT EXISTS influencers (
   tracked      INTEGER NOT NULL DEFAULT 0,  -- 1이면 인스타그램 수집기가 주기적으로 확인
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 수집 대상/후보 계정. 시드 계정에서 출발해 게시물 속 @언급을 따라 계속 늘어난다.
+CREATE TABLE IF NOT EXISTS accounts (
+  handle          TEXT PRIMARY KEY,
+  status          TEXT NOT NULL DEFAULT 'candidate', -- tracked | candidate | ignored | unreachable
+  kind            TEXT NOT NULL DEFAULT 'unknown',   -- influencer | brand | unknown
+  name            TEXT NOT NULL DEFAULT '',
+  bio             TEXT NOT NULL DEFAULT '',
+  followers       INTEGER,
+  score           INTEGER NOT NULL DEFAULT 0,
+  gonggu_posts    INTEGER NOT NULL DEFAULT 0,        -- 최근 게시물 중 공구 글 수
+  discovered_from TEXT,                              -- 처음 발견된 계정 (시드면 NULL)
+  mention_count   INTEGER NOT NULL DEFAULT 0,        -- 추적 계정들에게 언급된 횟수
+  last_checked_at TEXT,
+  last_error      TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS accounts_status ON accounts(status, last_checked_at);
+
+-- 계정 간 언급 관계 (A의 게시물이 @B를 언급)
+CREATE TABLE IF NOT EXISTS mentions (
+  from_handle TEXT NOT NULL,
+  to_handle   TEXT NOT NULL,
+  post_url    TEXT NOT NULL,
+  is_gonggu   INTEGER NOT NULL DEFAULT 0,
+  seen_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (from_handle, to_handle, post_url)
+);
 `;
+
+export const ACCOUNT_STATUSES = ['tracked', 'candidate', 'ignored', 'unreachable'];
 
 export function openDb(file) {
   if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  // 예전 버전의 influencers.tracked 를 accounts 로 옮긴다
+  db.exec(`INSERT OR IGNORE INTO accounts(handle, status) SELECT handle, 'tracked' FROM influencers WHERE tracked = 1`);
   return new Store(db);
 }
 
@@ -137,13 +169,98 @@ export class Store {
     };
   }
 
+  // ---------- 수집 대상 계정 ----------
   trackedHandles() {
-    return this.db.prepare('SELECT handle FROM influencers WHERE tracked = 1 ORDER BY handle').all().map((r) => r.handle);
+    return this.db.prepare(`SELECT handle FROM accounts WHERE status = 'tracked' ORDER BY handle`).all().map((r) => r.handle);
   }
 
   setTracked(handle, tracked) {
+    this.setAccountStatus(handle, tracked ? 'tracked' : 'ignored');
+  }
+
+  getAccount(handle) {
+    return this.db.prepare('SELECT * FROM accounts WHERE handle = ?').get(normalizeHandle(handle)) ?? null;
+  }
+
+  /** 사용자가 직접 넣은 시드 계정: 바로 추적 */
+  addSeeds(handles) {
+    const added = [];
+    for (const raw of handles) {
+      const h = normalizeHandle(raw);
+      if (!isValidHandle(h)) continue;
+      this.db.prepare(`INSERT INTO accounts(handle, status) VALUES (?, 'tracked')
+        ON CONFLICT(handle) DO UPDATE SET status = 'tracked', last_error = NULL`).run(h);
+      added.push(h);
+    }
+    return added;
+  }
+
+  setAccountStatus(handle, status) {
     const h = normalizeHandle(handle);
     if (!isValidHandle(h)) throw new ValidationError('인스타그램 계정을 확인해주세요.');
-    this.db.prepare('INSERT INTO influencers(handle, tracked) VALUES (?, ?) ON CONFLICT(handle) DO UPDATE SET tracked = excluded.tracked').run(h, tracked ? 1 : 0);
+    if (!ACCOUNT_STATUSES.includes(status)) throw new ValidationError('알 수 없는 상태예요.');
+    this.db.prepare(`INSERT INTO accounts(handle, status) VALUES (?, ?) ON CONFLICT(handle) DO UPDATE SET status = excluded.status`).run(h, status);
+    return this.getAccount(h);
+  }
+
+  /** 언급으로 새로 발견한 계정은 후보로 (이미 있으면 언급 수만 증가) */
+  addCandidate(handle, from) {
+    const h = normalizeHandle(handle);
+    if (!isValidHandle(h) || h === from) return false;
+    const r = this.db.prepare(`INSERT INTO accounts(handle, status, discovered_from, mention_count) VALUES (?, 'candidate', ?, 1)
+      ON CONFLICT(handle) DO NOTHING`).run(h, from);
+    if (!r.changes) this.db.prepare('UPDATE accounts SET mention_count = mention_count + 1 WHERE handle = ?').run(h);
+    return r.changes > 0;
+  }
+
+  recordMention(from, to, postUrl, isGonggu) {
+    this.db.prepare(`INSERT INTO mentions(from_handle, to_handle, post_url, is_gonggu) VALUES (?,?,?,?) ON CONFLICT DO NOTHING`)
+      .run(from, to, postUrl, isGonggu ? 1 : 0);
+  }
+
+  updateAccountProfile(handle, p) {
+    this.db.prepare(`UPDATE accounts SET name = ?, bio = ?, followers = ?, kind = ?, score = ?, gonggu_posts = ?,
+      last_checked_at = datetime('now'), last_error = NULL WHERE handle = ?`).run(
+      p.name || '', p.bio || '', p.followers ?? null, p.kind, p.score, p.gonggu_posts ?? 0, handle);
+  }
+
+  markAccountError(handle, message, status) {
+    this.db.prepare(`UPDATE accounts SET last_error = ?, last_checked_at = datetime('now')${status ? ', status = ?' : ''} WHERE handle = ?`)
+      .run(...(status ? [message, status, handle] : [message, handle]));
+  }
+
+  /** 가장 오래전에 확인한 추적 계정부터 */
+  dueTracked(limit) {
+    return this.db.prepare(`SELECT * FROM accounts WHERE status = 'tracked' ORDER BY last_checked_at IS NOT NULL, last_checked_at LIMIT ?`).all(limit);
+  }
+
+  /** 아직 프로필을 확인하지 않은 후보 (많이 언급된 순) */
+  uncheckedCandidates(limit) {
+    return this.db.prepare(`SELECT * FROM accounts WHERE status = 'candidate' AND last_checked_at IS NULL
+      ORDER BY mention_count DESC, created_at LIMIT ?`).all(limit);
+  }
+
+  listAccounts(status) {
+    const rows = this.db.prepare(`SELECT a.*, (SELECT COUNT(*) FROM deals d WHERE d.handle = a.handle AND d.review = 'published') AS deal_count
+      FROM accounts a ${status ? 'WHERE a.status = ?' : ''}
+      ORDER BY a.status, a.score DESC, a.mention_count DESC, a.handle`).all(...(status ? [status] : []));
+    return rows;
+  }
+
+  accountCounts() {
+    const out = Object.fromEntries(ACCOUNT_STATUSES.map((s) => [s, 0]));
+    for (const r of this.db.prepare('SELECT status, COUNT(*) AS n FROM accounts GROUP BY status').all()) out[r.status] = r.n;
+    return out;
+  }
+
+  /** 같은 계정·시작일에 이름이 겹치는 제품 공구가 이미 있는지 (본인 글과 브랜드 일정 글의 중복 방지) */
+  hasDeal(handle, productName, start_date) {
+    const key = productKey('', productName);
+    return this.db.prepare('SELECT product_name, brand FROM deals WHERE handle = ? AND start_date = ?').all(handle, start_date)
+      .some((d) => { const k = productKey('', d.product_name); return k.includes(key) || key.includes(k); });
+  }
+
+  hasPost(postUrl) {
+    return this.db.prepare('SELECT 1 FROM deals WHERE post_url = ?').get(postUrl) != null;
   }
 }

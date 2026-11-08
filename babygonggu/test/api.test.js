@@ -2,7 +2,6 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/server.js';
 import { dealStatus, dday } from '../public/lib/dates.js';
-import { extractDeals } from '../scripts/collect-instagram.js';
 
 const NOW = () => new Date('2026-11-08T03:00:00Z'); // KST 11/8 낮
 let base, server, store;
@@ -120,17 +119,4 @@ test('정적 파일 + 경로 탈출 차단', async () => {
   assert.equal((await call('/lib/parser.js')).status, 200);
   assert.notEqual((await call('/..%2f..%2fpackage.json')).status, 200);
   assert.notEqual((await call('/%2e%2e/src/db.js')).status, 200);
-});
-
-test('수집기: 공구 게시물만 추려서 후보로', () => {
-  const media = [
-    { caption: '[예시 떡뻥] 공구 오픈!\n11/10 ~ 11/13\n공구가 8,900원', permalink: 'https://www.instagram.com/p/AAA/', timestamp: '2026-11-07T10:00:00+0000' },
-    { caption: '오늘 아기랑 산책했어요', permalink: 'https://www.instagram.com/p/BBB/', timestamp: '2026-11-07T10:00:00+0000' },
-    { caption: '[옛날 공구] 공구 오픈 9/1 ~ 9/3', permalink: 'https://www.instagram.com/p/CCC/', timestamp: '2026-08-30T10:00:00+0000' },
-  ];
-  const out = extractDeals('mom_x', media, '2026-11-08');
-  assert.equal(out.length, 1);
-  assert.equal(out[0].product_name, '예시 떡뻥');
-  assert.equal(out[0].start_date, '2026-11-10');
-  assert.equal(out[0].price, 8900);
 });

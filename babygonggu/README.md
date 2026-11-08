@@ -37,16 +37,9 @@ npm test             # 파서·API 테스트
 
 ## 데이터는 어떻게 모이나
 
-인스타그램은 비공개 API 스크래핑을 금지하고, 공구 글은 해시태그도 거의 없어 검색으로도 잘 안 잡힙니다. 그래서 두 가지 경로를 씁니다.
-
-1. **제보(크라우드소싱)** – 팔로우하는 엄마·아빠들이 본 공구 게시물을 링크+본문 붙여넣기로 30초 안에 등록. 같은 게시물 중복 등록은 자동 차단, 같은 제품명이면 제품별 보기에서 자동으로 묶임.
-2. **공식 Graph API 자동 수집 (선택)** – `scripts/collect-instagram.js`
-   - 내 인스타 프로페셔널 계정 + 페이스북 앱의 액세스 토큰으로, **Business Discovery** API를 통해 추적 중인 인플루언서(프로페셔널 계정)의 최근 게시물을 읽고 공구 글만 골라 `검토 대기`로 저장
-   ```bash
-   IG_USER_ID=... IG_ACCESS_TOKEN=... npm run collect -- 계정1 계정2   # 추적 목록에 추가 + 수집
-   IG_USER_ID=... IG_ACCESS_TOKEN=... npm run collect                 # 추적 목록 전체 (cron으로 하루 몇 번)
-   ```
-   - 스토리·친한친구 전용 공지는 API로 볼 수 없으므로 제보와 함께 쓰는 걸 권장
+1. **자동 수집 (인스타그램 공식 Graph API)** – 아는 공구 계정 몇 개를 **수집 계정 관리** 탭에 넣으면, 그 계정들의 최근 게시물에서 공구를 모으고 게시물 속 @언급을 따라 **연관 인플루언서·브랜드를 계속 발굴**해요. 브랜드의 "릴레이 공구 일정" 글에서 다음 인플루언서의 예정 공구도 잡아요. 2시간마다 자동으로 돌아요.
+   → 연결 방법: [docs/instagram-setup.md](docs/instagram-setup.md)
+2. **제보** – 스토리나 개인 계정처럼 API로 못 보는 공구는 링크와 본문을 붙여넣어 30초 만에 등록해요.
 
 ## 구조
 
@@ -57,7 +50,9 @@ babygonggu/
 ├─ src/seed.js          가상 샘플 데이터 (실행일 기준 상대 날짜)
 ├─ public/              프론트엔드 (바닐라 JS, 빌드 불필요)
 │  └─ lib/              서버·브라우저 공용: 캡션 파서, 날짜/상태 계산, ics 생성
-├─ scripts/collect-instagram.js   Graph API 수집기
+├─ src/collector.js     공구 수집 + 연관 계정 발굴
+├─ src/instagram.js     Graph API(Business Discovery) 클라이언트
+├─ scripts/collect-instagram.js   수집 1회 실행 (cron용)
 └─ test/                node:test 테스트
 ```
 
