@@ -1,8 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { CATEGORIES, normalizeHandle, isValidHandle, parseInstagramUrl } from '../public/lib/parser.js';
-import { isValidDate, dealStatus, dday, effectiveEnd } from '../public/lib/dates.js';
+import { normalizeHandle, isValidHandle } from '../public/lib/parser.js';
+import { ValidationError, productKey, validateDeal, withStatus, groupDeals } from '../public/lib/core.js';
+
+export { ValidationError, productKey, validateDeal };
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS deals (
@@ -35,50 +37,6 @@ CREATE TABLE IF NOT EXISTS influencers (
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `;
-
-export function productKey(brand, name) {
-  return `${brand || ''}${name || ''}`.normalize('NFC').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
-}
-
-export class ValidationError extends Error {}
-
-function cleanText(v, max) {
-  return String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max);
-}
-
-function cleanPrice(v) {
-  if (v === '' || v == null) return null;
-  const n = Number(String(v).replace(/[,원\s]/g, ''));
-  if (!Number.isInteger(n) || n < 0 || n > 100_000_000) throw new ValidationError('가격은 숫자로 입력해주세요.');
-  return n;
-}
-
-/** 사용자 입력을 검증·정규화. 잘못되면 ValidationError */
-export function validateDeal(input) {
-  const handle = normalizeHandle(input.handle);
-  if (!isValidHandle(handle)) throw new ValidationError('인스타그램 계정(@아이디)을 확인해주세요.');
-  const product_name = cleanText(input.product_name, 80);
-  if (!product_name) throw new ValidationError('제품명을 입력해주세요.');
-  const brand = cleanText(input.brand, 40);
-  const category = CATEGORIES.includes(input.category) ? input.category : '기타';
-  const start_date = String(input.start_date || '');
-  if (!isValidDate(start_date)) throw new ValidationError('공구 시작일을 입력해주세요.');
-  const end_date = input.end_date ? String(input.end_date) : null;
-  if (end_date && !isValidDate(end_date)) throw new ValidationError('마감일 형식이 올바르지 않아요.');
-  if (end_date && end_date < start_date) throw new ValidationError('마감일이 시작일보다 빨라요.');
-  let post_url = null;
-  if (input.post_url) {
-    post_url = parseInstagramUrl(input.post_url).post_url || null;
-    if (!post_url) throw new ValidationError('인스타그램 게시물 링크(instagram.com/p/… 또는 /reel/…)를 넣어주세요.');
-  }
-  return {
-    handle, product_name, brand, category, start_date, end_date, post_url,
-    product_key: productKey(brand, product_name),
-    price: cleanPrice(input.price),
-    original_price: cleanPrice(input.original_price),
-    note: cleanText(input.note, 300),
-  };
-}
 
 export function openDb(file) {
   if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
@@ -161,48 +119,14 @@ export class Store {
       args.push(like, like, like, like);
     }
     const rows = this.db.prepare(`SELECT * FROM deals WHERE ${where.join(' AND ')} ORDER BY start_date, id`).all(...args);
-    const status = f.status || 'active';
-    return rows
-      .map((r) => ({ ...r, status: dealStatus(r, f.today), dday: dday(r, f.today), effective_end: effectiveEnd(r) }))
-      .filter((r) => status === 'all' || r.status === status || (status === 'active' && r.status !== 'ended'));
+    return withStatus(rows, f.today, f.status || 'active');
   }
 
   /** 제품별/계정별 그룹. 필터에 걸린 공구가 하나라도 있는 그룹을 반환하되, 그룹 안에는 전체 이력을 담는다. */
   grouped(by, f) {
     const matched = this.listDeals(f);
-    const keyOf = (d) => (by === 'product' ? d.product_key : d.handle);
-    const keys = new Set(matched.map(keyOf));
-    if (!keys.size) return [];
-    const all = this.listDeals({ today: f.today, status: 'all' }).filter((d) => keys.has(keyOf(d)));
-    const groups = new Map();
-    for (const d of all) {
-      const k = keyOf(d);
-      if (!groups.has(k)) groups.set(k, []);
-      groups.get(k).push(d);
-    }
-    const rank = { ongoing: 0, upcoming: 1, ended: 2 };
-    const out = [];
-    for (const [key, deals] of groups) {
-      deals.sort((a, b) => a.start_date.localeCompare(b.start_date) || a.id - b.id);
-      const ongoing = deals.filter((d) => d.status === 'ongoing');
-      const upcoming = deals.filter((d) => d.status === 'upcoming');
-      const latest = deals[deals.length - 1];
-      const prices = deals.filter((d) => d.status !== 'ended' && d.price).map((d) => d.price);
-      out.push({
-        key,
-        title: by === 'product' ? latest.product_name : latest.handle,
-        brand: by === 'product' ? latest.brand : undefined,
-        category: latest.category,
-        deals,
-        ongoing_count: ongoing.length,
-        upcoming_count: upcoming.length,
-        min_active_price: prices.length ? Math.min(...prices) : null,
-        next_date: ongoing[0]?.effective_end ?? upcoming[0]?.start_date ?? latest.start_date,
-        top_status: ongoing.length ? 'ongoing' : upcoming.length ? 'upcoming' : 'ended',
-      });
-    }
-    out.sort((a, b) => rank[a.top_status] - rank[b.top_status] || a.next_date.localeCompare(b.next_date) || a.title.localeCompare(b.title));
-    return out;
+    if (!matched.length) return [];
+    return groupDeals(by, matched, this.listDeals({ today: f.today, status: 'all' }));
   }
 
   suggestions() {

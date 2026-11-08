@@ -16,7 +16,9 @@ const state = {
   showEnded: false,
   watch: new Set(store.get('watch', [])),
   meta: null,
+  focus: null,        // {view:'products'|'accounts', key} 특정 제품/계정만 보기
 };
+const DEMO = Boolean(window.GONGGU_DEMO); // 서버 없이 브라우저에서 도는 체험판
 const $ = (s, el = document) => el.querySelector(s);
 
 // ---------- 유틸 ----------
@@ -101,8 +103,8 @@ function handleLink(h) {
 function dealActions(d, { admin = false } = {}) {
   return html`<div class="actions">
     ${d.post_url ? html`<a class="btn primary" href="${d.post_url}" target="_blank" rel="noopener">공구 게시물 보기</a>` : html`<a class="btn primary" href="${igProfile(d.handle)}" target="_blank" rel="noopener">계정 보러가기</a>`}
-    ${d.status !== 'ended' ? html`<button type="button" class="btn" data-ics="${d.id}">📅 캘린더</button>` : ''}
-    <a class="btn ghost" href="#/products/${encodeURIComponent(d.product_key)}">같은 제품 공구</a>
+    ${d.status !== 'ended' && !DEMO ? html`<button type="button" class="btn" data-ics="${d.id}">📅 캘린더</button>` : ''}
+    <a class="btn ghost" href="#products" data-focus="products" data-key="${d.product_key}">같은 제품 공구</a>
     ${admin ? html`<button type="button" class="btn ghost danger" data-del="${d.id}">삭제</button>` : ''}
   </div>`;
 }
@@ -125,7 +127,7 @@ function dealCard(d, opts = {}) {
 }
 
 function emptyState(msg) {
-  return html`<div class="empty"><p>${msg}</p><p class="hint">팔로우하는 인플루언서가 공구를 올렸다면 링크만 붙여넣어 제보해주세요.</p><a class="btn primary" href="#/submit">＋ 공구 제보하기</a></div>`;
+  return html`<div class="empty"><p>${msg}</p><p class="hint">팔로우하는 인플루언서가 공구를 올렸다면 링크만 붙여넣어 제보해주세요.</p><a class="btn primary" href="#submit">＋ 공구 제보하기</a></div>`;
 }
 
 // ---------- 뷰 ----------
@@ -153,7 +155,7 @@ async function viewList(status) {
 }
 
 function timelineItem(d, by) {
-  const who = by === 'product' ? html`${starBtn(d.handle)}${handleLink(d.handle)}` : html`<a href="#/products/${encodeURIComponent(d.product_key)}">${d.brand ? d.brand + ' ' : ''}${d.product_name}</a>`;
+  const who = by === 'product' ? html`${starBtn(d.handle)}${handleLink(d.handle)}` : html`<a href="#products" data-focus="products" data-key="${d.product_key}">${d.brand ? d.brand + ' ' : ''}${d.product_name}</a>`;
   return html`<li class="st-${d.status}">
     <div>
       <div class="row">${who}</div>
@@ -185,7 +187,7 @@ function groupCard(g, by) {
     summary = html`진행중 <b>${ongoing.length}</b> · 예정 <b>${upcoming.length}</b> · 지난 공구 ${ended.length}`;
   }
   const title = by === 'product'
-    ? html`<h3><a href="#/products/${encodeURIComponent(g.key)}" style="text-decoration:none">${g.brand ? html`<span class="brand">${g.brand}</span>` : ''}${g.title}</a></h3>`
+    ? html`<h3><a href="#products" data-focus="products" data-key="${g.key}" style="text-decoration:none">${g.brand ? html`<span class="brand">${g.brand}</span>` : ''}${g.title}</a></h3>`
     : html`<h3 class="row">${starBtn(g.key)}${handleLink(g.key)}</h3>`;
   return html`<article class="card">
     <div class="group-head">
@@ -210,7 +212,7 @@ async function viewGroups(by, key) {
   const intro = by === 'product'
     ? '같은 제품을 여러 인플루언서가 이어서 공구하는 흐름을 한눈에 볼 수 있어요. 지금 놓쳤다면 다음 공구를 확인하세요.'
     : '인플루언서별로 진행중·예정 공구를 모았어요. ★를 눌러 관심 계정으로 저장하세요.';
-  return html`${key ? html`<p><a href="#/${by === 'product' ? 'products' : 'accounts'}">← 전체 보기</a></p>` : html`<p class="hint">${intro}</p>`}
+  return html`${key ? html`<p><a href="#${by === 'product' ? 'products' : 'accounts'}" data-unfocus>← 전체 보기</a></p>` : html`<p class="hint">${intro}</p>`}
     <div class="list">${groups.map((g) => groupCard(g, by))}</div>`;
 }
 
@@ -324,7 +326,8 @@ function bindSubmit() {
       const r = await api('/api/deals', { method: 'POST', body });
       toast(r.review === 'pending' ? '제보 고마워요! 확인 후 게시될 거예요.' : '등록됐어요! 고마워요 🙌');
       await refreshMeta();
-      location.hash = r.review === 'pending' ? '#/ongoing' : `#/products/${encodeURIComponent(r.deal.product_key)}`;
+      if (r.review === 'pending') go('ongoing');
+      else go('products', r.deal.product_key);
     } catch (ex) {
       err.textContent = ex.message;
     } finally {
@@ -335,8 +338,10 @@ function bindSubmit() {
 
 // ---------- 라우팅/렌더 ----------
 async function render() {
-  const [, view = 'ongoing', key] = location.hash.match(/^#\/([a-z]+)(?:\/(.+))?/) || [];
+  const [, view = 'ongoing'] = location.hash.match(/^#\/?([a-z]+)/) || [];
   state.view = view;
+  if (state.focus && state.focus.view !== view) state.focus = null;
+  const key = state.focus?.key;
   for (const a of document.querySelectorAll('#tabs a')) a.classList.toggle('active', a.dataset.view === view);
   $('#filters').hidden = view === 'submit' || view === 'review';
   $('#show-ended-wrap').hidden = !(view === 'products' || view === 'accounts');
@@ -345,8 +350,8 @@ async function render() {
   try {
     let out;
     if (view === 'upcoming') out = await viewList('upcoming');
-    else if (view === 'products') out = await viewGroups('product', key && decodeURIComponent(key));
-    else if (view === 'accounts') out = await viewGroups('influencer', key && decodeURIComponent(key));
+    else if (view === 'products') out = await viewGroups('product', key);
+    else if (view === 'accounts') out = await viewGroups('influencer', key);
     else if (view === 'review') out = await viewReview();
     else if (view === 'submit') {
       suggestions = await api('/api/suggestions').catch(() => suggestions);
@@ -391,6 +396,23 @@ function downloadICS(d) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+/** confirm() 대신 쓰는 페이지 내 확인창 */
+function ask(message, okLabel = '확인') {
+  return new Promise((resolve) => {
+    openDialog(html`<p style="margin:0 0 4px;font-weight:600">${message}</p>
+      <div class="actions" style="margin-top:12px"><button type="button" class="btn primary" id="ask-ok">${okLabel}</button></div>`);
+    const dlg = $('#dlg');
+    let ok = false;
+    $('#ask-ok').addEventListener('click', () => { ok = true; dlg.close(); });
+    dlg.addEventListener('close', () => resolve(ok), { once: true });
+  });
+}
+
+function go(view, key) {
+  state.focus = key ? { view, key } : null;
+  if (location.hash === '#' + view) render(); else location.hash = view;
+}
+
 function openDialog(content) {
   $('#dlg-body').innerHTML = content[RAW];
   $('#dlg').showModal();
@@ -400,6 +422,16 @@ function openDialog(content) {
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('button, a');
   if (!t) return;
+  if (t.dataset.focus) {
+    e.preventDefault();
+    window.scrollTo(0, 0);
+    return go(t.dataset.focus, t.dataset.key);
+  }
+  if (t.dataset.unfocus !== undefined || (t.dataset.view && t.closest('#tabs'))) {
+    state.focus = null;
+    if (location.hash === t.getAttribute('href')) { e.preventDefault(); render(); }
+    return;
+  }
   if (t.dataset.star !== undefined) {
     const h = t.dataset.star;
     state.watch.has(h) ? state.watch.delete(h) : state.watch.add(h);
@@ -419,7 +451,7 @@ document.addEventListener('click', async (e) => {
     const d = dealCache.get(t.dataset.ics);
     if (d) downloadICS(d);
   } else if (t.dataset.del) {
-    if (!confirm('이 공구를 삭제할까요?')) return;
+    if (!(await ask('이 공구를 삭제할까요?', '삭제'))) return;
     try { await api(`/api/deals/${t.dataset.del}`, { method: 'DELETE' }); toast('삭제했어요.'); await refreshMeta(); render(); } catch (ex) { toast(ex.message); }
   } else if (t.dataset.approve) {
     try { await api(`/api/deals/${t.dataset.approve}`, { method: 'PATCH', body: { review: 'published' } }); toast('게시했어요.'); await refreshMeta(); render(); } catch (ex) { toast(ex.message); }
@@ -447,7 +479,7 @@ $('#asof').addEventListener('change', async (e) => {
   render();
 });
 $('#del-samples').addEventListener('click', async () => {
-  if (!confirm('샘플 데이터를 모두 삭제할까요?')) return;
+  if (!(await ask('샘플 데이터를 모두 삭제할까요?', '삭제'))) return;
   try { const r = await api('/api/samples', { method: 'DELETE' }); toast(`샘플 ${r.deleted}건을 삭제했어요.`); await refreshMeta(); render(); } catch (ex) { toast(ex.message); }
 });
 $('#subscribe').addEventListener('click', () => {
@@ -476,5 +508,6 @@ $('#admin-btn').addEventListener('click', () => {
 window.addEventListener('hashchange', () => { window.scrollTo(0, 0); render(); });
 
 // ---------- 시작 ----------
+if (DEMO) $('#subscribe').hidden = true;
 renderCats();
 refreshMeta().then(render).catch((e) => { $('#view').innerHTML = html`<div class="empty">서버에 연결하지 못했어요. (${e.message})</div>`[RAW]; });

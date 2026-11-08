@@ -73,3 +73,11 @@ babygonggu/
 | PATCH/DELETE | `/api/deals/:id` | 게시·수정·삭제 (관리자) |
 
 상태 규칙: `시작일 > 오늘` 예정, `마감일 < 오늘` 종료, 그 외 진행중. 마감일 미정은 시작 후 14일까지 진행중으로 봅니다. 날짜는 한국 시간 기준입니다.
+
+## 체험판 (서버 없이 브라우저에서)
+
+`public/demo-api.js`가 `/api/*` 요청을 브라우저 안에서 처리하는 체험판이에요. 같은 규칙(`public/lib/core.js`)을 쓰고, 데이터는 그 브라우저에만 저장돼요.
+
+```bash
+node scripts/build-demo.js   # demo/index.html 생성 → public/의 styles.css, app.js, demo-api.js, lib/*.js와 함께 정적 호스팅
+```
