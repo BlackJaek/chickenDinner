@@ -183,14 +183,15 @@ export class Store {
   }
 
   /** 사용자가 직접 넣은 시드 계정: 바로 추적 */
-  addSeeds(handles) {
+  addSeeds(handles, { keepExisting = false } = {}) {
     const added = [];
     for (const raw of handles) {
       const h = normalizeHandle(raw);
       if (!isValidHandle(h)) continue;
-      this.db.prepare(`INSERT INTO accounts(handle, status) VALUES (?, 'tracked')
-        ON CONFLICT(handle) DO UPDATE SET status = 'tracked', last_error = NULL`).run(h);
-      added.push(h);
+      // keepExisting: 시드 파일처럼 반복 실행될 때, 사용자가 바꾼 상태(제외 등)를 덮어쓰지 않는다
+      const r = this.db.prepare(`INSERT INTO accounts(handle, status) VALUES (?, 'tracked')
+        ON CONFLICT(handle) DO ${keepExisting ? 'NOTHING' : "UPDATE SET status = 'tracked', last_error = NULL"}`).run(h);
+      if (r.changes) added.push(h);
     }
     return added;
   }

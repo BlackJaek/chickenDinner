@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, normalize, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
@@ -54,6 +55,7 @@ async function readJson(req, limit = 64 * 1024) {
 export function createApp({
   dbFile = process.env.DB_FILE || join(ROOT, 'data', 'gonggu.db'), adminToken = process.env.ADMIN_TOKEN || '',
   seed = process.env.SEED_SAMPLES !== '0', now, igClient = graphClientFromEnv(),
+  seedAccountsFile = process.env.SEED_ACCOUNTS_FILE ?? join(ROOT, 'data', 'seed-accounts.txt'),
   collectOptions = {
     budget: Number(process.env.COLLECT_BUDGET || 60),
     autoTrackScore: Number(process.env.AUTO_TRACK_SCORE || 5),
@@ -62,6 +64,12 @@ export function createApp({
 } = {}) {
   const store = openDb(dbFile);
   const today = () => todayKST(now ? now() : new Date());
+  // 시드 계정 파일 (data/seed-accounts.txt)
+  if (seedAccountsFile && existsSync(seedAccountsFile)) {
+    const handles = readFileSync(seedAccountsFile, 'utf8').split('\n').map((l) => l.replace(/#.*/, '').trim()).filter(Boolean);
+    const added = store.addSeeds(handles, { keepExisting: true });
+    if (added.length) console.log(`시드 계정 ${added.length}개를 추적 목록에 넣었어요.`);
+  }
   // 실제 수집이 설정돼 있으면 샘플은 넣지 않는다
   if (seed && !igClient && store.count() === 0) seedSamples(store, today());
 

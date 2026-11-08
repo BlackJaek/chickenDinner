@@ -17,7 +17,7 @@ async function call(path, { method = 'GET', body, token } = {}) {
 }
 
 before(async () => {
-  ({ server, store } = createApp({ dbFile: ':memory:', now: NOW, adminToken: 'secret' }));
+  ({ server, store } = createApp({ dbFile: ':memory:', now: NOW, adminToken: 'secret', seedAccountsFile: '' }));
   await new Promise((r) => server.listen(0, r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -119,4 +119,18 @@ test('정적 파일 + 경로 탈출 차단', async () => {
   assert.equal((await call('/lib/parser.js')).status, 200);
   assert.notEqual((await call('/..%2f..%2fpackage.json')).status, 200);
   assert.notEqual((await call('/%2e%2e/src/db.js')).status, 200);
+});
+
+test('시드 계정 파일: 추적 목록에 들어가고, 사용자가 바꾼 상태는 유지', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(tmpdir() + '/gonggu-');
+  const file = dir + '/seeds.txt';
+  writeFileSync(file, '# 주석\n@mom_a\nmom_b  # 메모\n잘못된계정\n');
+  const db = dir + '/t.db';
+  const a = createApp({ dbFile: db, seedAccountsFile: file, seed: false, igClient: null });
+  assert.deepEqual(a.store.trackedHandles(), ['mom_a', 'mom_b']);
+  a.store.setAccountStatus('mom_b', 'ignored');
+  const b = createApp({ dbFile: db, seedAccountsFile: file, seed: false, igClient: null });
+  assert.equal(b.store.getAccount('mom_b').status, 'ignored');
 });
