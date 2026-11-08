@@ -1,0 +1,14 @@
+{
+  "name": "babygonggu",
+  "version": "0.1.0",
+  "description": "인스타그램 아기용품·식품 공구(공동구매) 모아보기 웹서비스",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
+    "collect": "node --disable-warning=ExperimentalWarning scripts/collect-instagram.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\""
+  }
+}

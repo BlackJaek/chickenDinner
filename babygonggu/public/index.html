@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>아기 공구 모아보기</title>
+  <meta name="description" content="인스타그램 아기용품·이유식 공구(공동구매)를 날짜·제품·계정별로 모아보는 서비스">
+  <meta name="theme-color" content="#ff8a65">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍼</text></svg>">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap top-inner">
+      <a href="#/ongoing" class="logo">🍼 아기 공구 모아보기</a>
+      <label class="asof" title="이 날짜 기준으로 진행중/예정을 계산해요">
+        <span id="asof-label"></span>
+        <input type="date" id="asof" aria-label="기준 날짜">
+      </label>
+    </div>
+    <nav class="wrap tabs" id="tabs" aria-label="보기 전환">
+      <a href="#/ongoing" data-view="ongoing">지금 공구중 <b id="c-ongoing"></b></a>
+      <a href="#/upcoming" data-view="upcoming">오픈 예정 <b id="c-upcoming"></b></a>
+      <a href="#/products" data-view="products">제품별</a>
+      <a href="#/accounts" data-view="accounts">계정별</a>
+      <a href="#/submit" data-view="submit" class="tab-cta">＋ 공구 제보</a>
+      <a href="#/review" data-view="review" id="tab-review" hidden>검토 대기 <b id="c-pending"></b></a>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <div id="sample-banner" class="banner" hidden>
+      지금 보이는 건 <b>가상의 샘플 데이터</b>예요. 실제 공구를 제보하면 이곳에 모여요.
+      <button type="button" id="del-samples" class="link">샘플 삭제</button>
+    </div>
+
+    <section id="filters" class="filters">
+      <input type="search" id="q" placeholder="제품명, 브랜드, @계정 검색" autocomplete="off">
+      <div class="chips" id="cats" role="group" aria-label="카테고리"></div>
+      <div class="filter-row">
+        <label class="toggle"><input type="checkbox" id="only-watch"> ★ 관심 계정만</label>
+        <label class="toggle" id="show-ended-wrap"><input type="checkbox" id="show-ended"> 종료된 공구도 보기</label>
+        <button type="button" class="link" id="subscribe">📅 관심 계정 캘린더 구독</button>
+      </div>
+    </section>
+
+    <section id="view" aria-live="polite"></section>
+  </main>
+
+  <footer class="wrap foot">
+    <p>공구 정보는 제보와 인스타그램 공개 게시물을 바탕으로 정리돼요. 가격·기간은 꼭 원 게시물에서 다시 확인해주세요.</p>
+    <button type="button" class="link" id="admin-btn">관리자</button>
+  </footer>
+
+  <dialog id="dlg">
+    <form method="dialog" id="dlg-form">
+      <div id="dlg-body"></div>
+      <menu><button value="cancel" class="btn ghost">닫기</button></menu>
+    </form>
+  </dialog>
+  <div id="toast" role="status" hidden></div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
