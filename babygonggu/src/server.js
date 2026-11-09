@@ -1,10 +1,13 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, normalize, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 import { openDb, ValidationError } from './db.js';
 import { seedSamples } from './seed.js';
+import { runCollection } from './collector.js';
+import { graphClientFromEnv } from './instagram.js';
 import { toICS } from '../public/lib/ics.js';
 import { todayKST, isValidDate } from '../public/lib/dates.js';
 import { parseCaption, CATEGORIES, normalizeHandle, isValidHandle } from '../public/lib/parser.js';
@@ -49,10 +52,58 @@ async function readJson(req, limit = 64 * 1024) {
   }
 }
 
-export function createApp({ dbFile = join(ROOT, 'data', 'gonggu.db'), adminToken = process.env.ADMIN_TOKEN || '', seed = true, now } = {}) {
+export function createApp({
+  dbFile = process.env.DB_FILE || join(ROOT, 'data', 'gonggu.db'), adminToken = process.env.ADMIN_TOKEN || '',
+  seed = process.env.SEED_SAMPLES !== '0', now, igClient = graphClientFromEnv(),
+  seedAccountsFile = process.env.SEED_ACCOUNTS_FILE ?? join(ROOT, 'data', 'seed-accounts.txt'),
+  collectOptions = {
+    budget: Number(process.env.COLLECT_BUDGET || 60),
+    autoTrackScore: Number(process.env.AUTO_TRACK_SCORE || 5),
+    autoPublish: process.env.AUTO_PUBLISH !== '0',
+  },
+} = {}) {
   const store = openDb(dbFile);
   const today = () => todayKST(now ? now() : new Date());
-  if (seed && store.count() === 0) seedSamples(store, today());
+  // 시드 계정 파일 (data/seed-accounts.txt)
+  if (seedAccountsFile && existsSync(seedAccountsFile)) {
+    const handles = readFileSync(seedAccountsFile, 'utf8').split('\n').map((l) => l.replace(/#.*/, '').trim()).filter(Boolean);
+    const added = store.addSeeds(handles, { keepExisting: true });
+    if (added.length) console.log(`시드 계정 ${added.length}개를 추적 목록에 넣었어요.`);
+  }
+  // 실제 수집이 설정돼 있으면 샘플은 넣지 않는다
+  if (seed && !igClient && store.count() === 0) seedSamples(store, today());
+
+  // ---------- 자동 수집 ----------
+  const collect = { running: false, last: null, log: [] };
+  async function startCollection() {
+    if (!igClient) throw new HttpError(400, '인스타그램 API가 설정되지 않았어요. (IG_USER_ID, IG_ACCESS_TOKEN)');
+    if (collect.running) return false;
+    if (!store.trackedHandles().length) throw new HttpError(400, '추적할 계정을 먼저 추가해주세요.');
+    collect.running = true;
+    collect.log = [];
+    const started = new Date().toISOString();
+    try {
+      const stats = await runCollection({
+        store, client: igClient, today: today(), ...collectOptions,
+        log: (line) => { collect.log.push(line); if (collect.log.length > 200) collect.log.shift(); },
+      });
+      if (stats.deals_added > 0) store.deleteSamples(); // 실제 데이터가 들어오면 샘플 정리
+      collect.last = { started, finished: new Date().toISOString(), ...stats };
+    } catch (e) {
+      collect.last = { started, finished: new Date().toISOString(), stopped: e.message, errors: [] };
+    } finally {
+      collect.running = false;
+    }
+    return true;
+  }
+  let timer = null;
+  function scheduleCollection(minutes) {
+    if (!igClient || !minutes) return;
+    const tick = () => startCollection().catch((e) => { collect.last = { finished: new Date().toISOString(), stopped: e.message, errors: [] }; });
+    setTimeout(tick, 5_000).unref();
+    timer = setInterval(tick, minutes * 60_000);
+    timer.unref();
+  }
 
   const isAdmin = (req) => {
     if (!adminToken) return true; // 로컬/개인용: 토큰 미설정 시 모두 관리자
@@ -96,6 +147,7 @@ export function createApp({ dbFile = join(ROOT, 'data', 'gonggu.db'), adminToken
         },
         has_samples: store.db.prepare('SELECT 1 FROM deals WHERE is_sample=1 LIMIT 1').get() != null,
         review_required: Boolean(adminToken),
+        collector: { configured: Boolean(igClient), running: collect.running, last_finished: collect.last?.finished ?? null },
         is_admin: isAdmin(req),
       });
     }
@@ -147,6 +199,32 @@ export function createApp({ dbFile = join(ROOT, 'data', 'gonggu.db'), adminToken
       requireAdmin(req);
       return send(res, 200, { deleted: store.deleteSamples() });
     }
+    if (m === 'GET' && path === '/api/accounts') {
+      requireAdmin(req);
+      const status = url.searchParams.get('status') || '';
+      return send(res, 200, { counts: store.accountCounts(), accounts: store.listAccounts(status || undefined) });
+    }
+    if (m === 'POST' && path === '/api/accounts') {
+      requireAdmin(req);
+      const body = await readJson(req);
+      if (Array.isArray(body.seeds) || typeof body.seeds === 'string') {
+        const list = Array.isArray(body.seeds) ? body.seeds : body.seeds.split(/[\s,]+/);
+        return send(res, 200, { added: store.addSeeds(list.slice(0, 500).map(String)) });
+      }
+      return send(res, 200, { account: store.setAccountStatus(String(body.handle || ''), String(body.status || '')) });
+    }
+    if (m === 'GET' && path === '/api/collect') {
+      requireAdmin(req);
+      return send(res, 200, { configured: Boolean(igClient), running: collect.running, last: collect.last, log: collect.log });
+    }
+    if (m === 'POST' && path === '/api/collect') {
+      requireAdmin(req);
+      const run = startCollection();
+      run.catch(() => {});
+      // 바로 시작 여부만 알려주고, 진행 상황은 GET /api/collect 로 확인
+      await Promise.race([run, new Promise((r) => setTimeout(r, 50))]);
+      return send(res, 202, { running: collect.running });
+    }
     if (m === 'GET' && path === '/api/tracked') return send(res, 200, { handles: store.trackedHandles() });
     if (m === 'POST' && path === '/api/tracked') {
       requireAdmin(req);
@@ -185,11 +263,13 @@ export function createApp({ dbFile = join(ROOT, 'data', 'gonggu.db'), adminToken
       send(res, 500, { error: '서버 오류가 발생했어요.' });
     }
   });
-  return { server, store };
+  server.on('close', () => clearInterval(timer));
+  return { server, store, startCollection, scheduleCollection, collectState: collect };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT || 3000);
-  const { server } = createApp();
+  const { server, scheduleCollection } = createApp();
+  scheduleCollection(Number(process.env.COLLECT_INTERVAL_MIN || 120));
   server.listen(port, () => console.log(`🍼 아기 공구 모아보기: http://localhost:${port}`));
 }

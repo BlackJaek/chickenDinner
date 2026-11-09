@@ -1,0 +1,32 @@
+# 수집 시작점(시드) 계정. 서버가 시작할 때 추적 목록에 넣는다.
+# 이미 있는 계정의 상태(제외 등)는 바꾸지 않는다. 한 줄에 하나, @ 생략 가능, # 은 주석.
+# 사용자가 실제로 팔로우 중인 육아템 공구 인플루언서 (2026-11)
+dudung_love
+gamja._.girls
+oxo._.dduddu
+soeun.growup
+mom_wiz
+smallmini_3j
+xoxo.siwoo
+offyou_haus
+subong._.life
+ddari__ddari
+roze_mom
+march_home__
+okku_mom
+bbangzzi.sam
+kangyoon_mom
+mini_ddol
+bonheur_0926
+boda.mom
+momjoy0527
+_momplan
+oksu_daek
+2ddou
+todayonhae
+luv_yunworld
+hazzang_tips
+jewel_y.s
+ok._mommy
+yulniverze
+_hahane

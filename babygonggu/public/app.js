@@ -16,7 +16,9 @@ const state = {
   showEnded: false,
   watch: new Set(store.get('watch', [])),
   meta: null,
+  focus: null,        // {view:'products'|'accounts', key} 특정 제품/계정만 보기
 };
+const DEMO = Boolean(window.GONGGU_DEMO); // 서버 없이 브라우저에서 도는 체험판
 const $ = (s, el = document) => el.querySelector(s);
 
 // ---------- 유틸 ----------
@@ -101,8 +103,8 @@ function handleLink(h) {
 function dealActions(d, { admin = false } = {}) {
   return html`<div class="actions">
     ${d.post_url ? html`<a class="btn primary" href="${d.post_url}" target="_blank" rel="noopener">공구 게시물 보기</a>` : html`<a class="btn primary" href="${igProfile(d.handle)}" target="_blank" rel="noopener">계정 보러가기</a>`}
-    ${d.status !== 'ended' ? html`<button type="button" class="btn" data-ics="${d.id}">📅 캘린더</button>` : ''}
-    <a class="btn ghost" href="#/products/${encodeURIComponent(d.product_key)}">같은 제품 공구</a>
+    ${d.status !== 'ended' && !DEMO ? html`<button type="button" class="btn" data-ics="${d.id}">📅 캘린더</button>` : ''}
+    <a class="btn ghost" href="#products" data-focus="products" data-key="${d.product_key}">같은 제품 공구</a>
     ${admin ? html`<button type="button" class="btn ghost danger" data-del="${d.id}">삭제</button>` : ''}
   </div>`;
 }
@@ -125,7 +127,7 @@ function dealCard(d, opts = {}) {
 }
 
 function emptyState(msg) {
-  return html`<div class="empty"><p>${msg}</p><p class="hint">팔로우하는 인플루언서가 공구를 올렸다면 링크만 붙여넣어 제보해주세요.</p><a class="btn primary" href="#/submit">＋ 공구 제보하기</a></div>`;
+  return html`<div class="empty"><p>${msg}</p><p class="hint">팔로우하는 인플루언서가 공구를 올렸다면 링크만 붙여넣어 제보해주세요.</p><a class="btn primary" href="#submit">＋ 공구 제보하기</a></div>`;
 }
 
 // ---------- 뷰 ----------
@@ -153,7 +155,7 @@ async function viewList(status) {
 }
 
 function timelineItem(d, by) {
-  const who = by === 'product' ? html`${starBtn(d.handle)}${handleLink(d.handle)}` : html`<a href="#/products/${encodeURIComponent(d.product_key)}">${d.brand ? d.brand + ' ' : ''}${d.product_name}</a>`;
+  const who = by === 'product' ? html`${starBtn(d.handle)}${handleLink(d.handle)}` : html`<a href="#products" data-focus="products" data-key="${d.product_key}">${d.brand ? d.brand + ' ' : ''}${d.product_name}</a>`;
   return html`<li class="st-${d.status}">
     <div>
       <div class="row">${who}</div>
@@ -185,7 +187,7 @@ function groupCard(g, by) {
     summary = html`진행중 <b>${ongoing.length}</b> · 예정 <b>${upcoming.length}</b> · 지난 공구 ${ended.length}`;
   }
   const title = by === 'product'
-    ? html`<h3><a href="#/products/${encodeURIComponent(g.key)}" style="text-decoration:none">${g.brand ? html`<span class="brand">${g.brand}</span>` : ''}${g.title}</a></h3>`
+    ? html`<h3><a href="#products" data-focus="products" data-key="${g.key}" style="text-decoration:none">${g.brand ? html`<span class="brand">${g.brand}</span>` : ''}${g.title}</a></h3>`
     : html`<h3 class="row">${starBtn(g.key)}${handleLink(g.key)}</h3>`;
   return html`<article class="card">
     <div class="group-head">
@@ -210,7 +212,7 @@ async function viewGroups(by, key) {
   const intro = by === 'product'
     ? '같은 제품을 여러 인플루언서가 이어서 공구하는 흐름을 한눈에 볼 수 있어요. 지금 놓쳤다면 다음 공구를 확인하세요.'
     : '인플루언서별로 진행중·예정 공구를 모았어요. ★를 눌러 관심 계정으로 저장하세요.';
-  return html`${key ? html`<p><a href="#/${by === 'product' ? 'products' : 'accounts'}">← 전체 보기</a></p>` : html`<p class="hint">${intro}</p>`}
+  return html`${key ? html`<p><a href="#${by === 'product' ? 'products' : 'accounts'}" data-unfocus>← 전체 보기</a></p>` : html`<p class="hint">${intro}</p>`}
     <div class="list">${groups.map((g) => groupCard(g, by))}</div>`;
 }
 
@@ -222,6 +224,89 @@ async function viewReview() {
     <div class="list cards">${deals.map((d) => html`<div>${dealCard(d)}<div class="actions" style="margin-top:6px">
       <button type="button" class="btn primary" data-approve="${d.id}">게시</button>
       <button type="button" class="btn danger" data-del="${d.id}">삭제</button></div></div>`)}</div>`;
+}
+
+// ---------- 수집 계정 관리 ----------
+const KIND = { influencer: '인플루언서', brand: '브랜드', unknown: '미확인' };
+const ACC_TABS = [['tracked', '추적 중'], ['candidate', '후보'], ['ignored', '제외'], ['unreachable', '조회 불가']];
+let accTab = 'tracked';
+let pollTimer = null;
+
+function ago(sqlTime) {
+  if (!sqlTime) return '아직 안 함';
+  const ms = Date.now() - Date.parse(sqlTime.replace(' ', 'T') + (sqlTime.endsWith('Z') ? '' : 'Z'));
+  const m = Math.round(ms / 60000);
+  return m < 1 ? '방금' : m < 60 ? `${m}분 전` : m < 1440 ? `${Math.round(m / 60)}시간 전` : `${Math.round(m / 1440)}일 전`;
+}
+
+function collectStatus(c) {
+  if (!c.configured) {
+    return html`<div class="step"><h3>인스타그램 API 연결이 필요해요</h3>
+      <p class="hint">서버에 <b>IG_USER_ID</b>(내 인스타 프로페셔널 계정 ID)와 <b>IG_ACCESS_TOKEN</b>을 설정하면, 아래 계정들의 최근 게시물에서 공구를 자동으로 모으고 연관 계정을 계속 찾아요. 설정 방법은 <code>docs/instagram-setup.md</code>에 있어요.</p></div>`;
+  }
+  const l = c.last;
+  return html`<div class="step">
+    <div class="row between"><h3>자동 수집</h3>
+      <button type="button" class="btn primary" data-collect ${c.running ? 'disabled' : ''}>${c.running ? '수집 중…' : '지금 수집'}</button></div>
+    ${l ? html`<p class="hint" style="margin:0">마지막 수집 ${ago(l.finished)} · API ${l.calls ?? 0}회 · 공구 게시 <b>${l.deals_added ?? 0}</b>건 · 검토 대기 ${l.deals_pending ?? 0}건 · 새 후보 ${l.candidates_found ?? 0}개 · 자동 추적 ${l.auto_tracked?.length ?? 0}개</p>
+      ${l.stopped ? html`<p class="form-error" style="margin:0">중단됨: ${l.stopped}</p>` : ''}
+      ${l.errors?.length ? html`<details><summary class="hint">계정 오류 ${l.errors.length}건</summary><div class="hint">${l.errors.map((e) => html`<div>${e}</div>`)}</div></details>` : ''}`
+    : html`<p class="hint" style="margin:0">아직 수집하지 않았어요. 서버는 주기적으로(기본 2시간) 자동 수집해요.</p>`}
+    ${c.running && c.log.length ? html`<div class="hint">${c.log.slice(-5).map((x) => html`<div>${x}</div>`)}</div>` : ''}
+  </div>`;
+}
+
+function accountRow(a) {
+  const actions = ACC_TABS.filter(([st]) => st !== a.status && st !== 'unreachable')
+    .map(([st, label]) => html`<button type="button" class="btn ghost" data-acc="${a.handle}" data-acc-status="${st}">${st === 'tracked' ? '추적' : st === 'candidate' ? '후보로' : '제외'}</button>`);
+  return html`<article class="card">
+    <div class="row between">
+      <div class="row">${handleLink(a.handle)}<span class="badge b-cat">${KIND[a.kind] || a.kind}</span>${a.name ? html`<span class="meta">${a.name}</span>` : ''}</div>
+      <span class="meta">점수 ${a.score}</span>
+    </div>
+    ${a.bio ? html`<div class="note">${a.bio.slice(0, 140)}</div>` : ''}
+    <div class="meta">
+      ${a.followers != null ? `팔로워 ${a.followers.toLocaleString('ko-KR')} · ` : ''}최근 공구 글 ${a.gonggu_posts}개 · 등록된 공구 ${a.deal_count}건
+      ${a.discovered_from ? html` · <a href="${igProfile(a.discovered_from)}" target="_blank" rel="noopener">@${a.discovered_from}</a>에서 발견` : ' · 직접 추가'}
+      ${a.mention_count > 1 ? ` · ${a.mention_count}번 언급됨` : ''} · 확인 ${ago(a.last_checked_at)}
+    </div>
+    ${a.last_error ? html`<div class="form-error" style="font-size:13px">${a.last_error}</div>` : ''}
+    <div class="actions">${actions}</div>
+  </article>`;
+}
+
+async function viewManage() {
+  const [c, acc] = await Promise.all([api('/api/collect'), api(`/api/accounts?status=${accTab}`)]);
+  clearTimeout(pollTimer);
+  if (c.running) pollTimer = setTimeout(() => state.view === 'manage' && render(), 2500);
+  return html`<div class="form" style="max-width:none">
+    <h2>수집 계정 관리</h2>
+    <p class="help">공구를 하는 인플루언서·브랜드 계정을 넣어두면, 그 계정의 게시물에서 공구를 모으고 게시물 속 @언급을 따라가며 연관 계정을 계속 찾아요. 확실한 계정은 자동으로 추적하고, 애매한 계정은 '후보'로 모아둬요.</p>
+    ${collectStatus(c)}
+    <form class="step" id="seed-form">
+      <h3>계정 추가</h3>
+      <label class="field"><span>인스타그램 계정 (여러 개는 줄바꿈·쉼표·띄어쓰기로)</span>
+        <textarea id="seeds" style="min-height:80px" placeholder="@mom_account1&#10;@baby_brand_official&#10;https://www.instagram.com/someone/"></textarea></label>
+      <div><button class="btn primary" type="submit">추적 목록에 추가</button></div>
+    </form>
+    <div class="chips">${ACC_TABS.map(([st, label]) => html`<button type="button" class="chip" data-acc-tab="${st}" aria-pressed="${accTab === st}">${label} ${acc.counts[st] || 0}</button>`)}</div>
+    ${acc.accounts.length ? html`<div class="list cards">${acc.accounts.map(accountRow)}</div>` : html`<div class="empty">${accTab === 'tracked' ? '추적 중인 계정이 없어요. 위에서 계정을 추가해주세요.' : '해당하는 계정이 없어요.'}</div>`}
+  </div>`;
+}
+
+function bindManage() {
+  $('#seed-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const raw = $('#seeds').value;
+    const seeds = raw.split(/[\s,]+/).map(normalizeHandle).filter(Boolean);
+    if (!seeds.length) return toast('계정을 입력해주세요.');
+    try {
+      const r = await api('/api/accounts', { method: 'POST', body: { seeds } });
+      toast(`${r.added.length}개 계정을 추적 목록에 넣었어요.`);
+      accTab = 'tracked';
+      render();
+    } catch (ex) { toast(ex.message); }
+  });
 }
 
 // ---------- 제보 폼 ----------
@@ -324,7 +409,8 @@ function bindSubmit() {
       const r = await api('/api/deals', { method: 'POST', body });
       toast(r.review === 'pending' ? '제보 고마워요! 확인 후 게시될 거예요.' : '등록됐어요! 고마워요 🙌');
       await refreshMeta();
-      location.hash = r.review === 'pending' ? '#/ongoing' : `#/products/${encodeURIComponent(r.deal.product_key)}`;
+      if (r.review === 'pending') go('ongoing');
+      else go('products', r.deal.product_key);
     } catch (ex) {
       err.textContent = ex.message;
     } finally {
@@ -335,25 +421,29 @@ function bindSubmit() {
 
 // ---------- 라우팅/렌더 ----------
 async function render() {
-  const [, view = 'ongoing', key] = location.hash.match(/^#\/([a-z]+)(?:\/(.+))?/) || [];
+  const [, view = 'ongoing'] = location.hash.match(/^#\/?([a-z]+)/) || [];
   state.view = view;
+  if (state.focus && state.focus.view !== view) state.focus = null;
+  const key = state.focus?.key;
   for (const a of document.querySelectorAll('#tabs a')) a.classList.toggle('active', a.dataset.view === view);
-  $('#filters').hidden = view === 'submit' || view === 'review';
+  $('#filters').hidden = ['submit', 'review', 'manage'].includes(view);
   $('#show-ended-wrap').hidden = !(view === 'products' || view === 'accounts');
   const el = $('#view');
   const admin = Boolean(state.meta?.is_admin);
   try {
     let out;
     if (view === 'upcoming') out = await viewList('upcoming');
-    else if (view === 'products') out = await viewGroups('product', key && decodeURIComponent(key));
-    else if (view === 'accounts') out = await viewGroups('influencer', key && decodeURIComponent(key));
+    else if (view === 'products') out = await viewGroups('product', key);
+    else if (view === 'accounts') out = await viewGroups('influencer', key);
     else if (view === 'review') out = await viewReview();
+    else if (view === 'manage') out = await viewManage();
     else if (view === 'submit') {
       suggestions = await api('/api/suggestions').catch(() => suggestions);
       out = viewSubmit();
     } else out = await viewList('ongoing');
     el.innerHTML = out[RAW];
     if (view === 'submit') bindSubmit();
+    if (view === 'manage') bindManage();
     if (admin && view !== 'review' && state.meta?.review_required) {
       // 공개 운영 시에만 일반 화면에 삭제 버튼 노출 (로컬 모드에선 화면을 깔끔하게)
       for (const card of el.querySelectorAll('.card [data-ics]')) {
@@ -371,7 +461,8 @@ async function refreshMeta() {
   $('#c-ongoing').textContent = state.date ? '' : state.meta.counts.ongoing || '';
   $('#c-upcoming').textContent = state.date ? '' : state.meta.counts.upcoming || '';
   $('#c-pending').textContent = state.meta.counts.pending || '';
-  $('#tab-review').hidden = !(state.meta.is_admin && state.meta.review_required);
+  $('#tab-review').hidden = !(state.meta.is_admin && (state.meta.review_required || state.meta.counts.pending > 0));
+  $('#tab-manage').hidden = !state.meta.is_admin || DEMO;
   $('#sample-banner').hidden = !state.meta.has_samples;
   $('#asof').value = today();
   $('#asof-label').textContent = `${fmtDate(today())} 기준`;
@@ -391,6 +482,23 @@ function downloadICS(d) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+/** confirm() 대신 쓰는 페이지 내 확인창 */
+function ask(message, okLabel = '확인') {
+  return new Promise((resolve) => {
+    openDialog(html`<p style="margin:0 0 4px;font-weight:600">${message}</p>
+      <div class="actions" style="margin-top:12px"><button type="button" class="btn primary" id="ask-ok">${okLabel}</button></div>`);
+    const dlg = $('#dlg');
+    let ok = false;
+    $('#ask-ok').addEventListener('click', () => { ok = true; dlg.close(); });
+    dlg.addEventListener('close', () => resolve(ok), { once: true });
+  });
+}
+
+function go(view, key) {
+  state.focus = key ? { view, key } : null;
+  if (location.hash === '#' + view) render(); else location.hash = view;
+}
+
 function openDialog(content) {
   $('#dlg-body').innerHTML = content[RAW];
   $('#dlg').showModal();
@@ -400,6 +508,16 @@ function openDialog(content) {
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('button, a');
   if (!t) return;
+  if (t.dataset.focus) {
+    e.preventDefault();
+    window.scrollTo(0, 0);
+    return go(t.dataset.focus, t.dataset.key);
+  }
+  if (t.dataset.unfocus !== undefined || (t.dataset.view && t.closest('#tabs'))) {
+    state.focus = null;
+    if (location.hash === t.getAttribute('href')) { e.preventDefault(); render(); }
+    return;
+  }
   if (t.dataset.star !== undefined) {
     const h = t.dataset.star;
     state.watch.has(h) ? state.watch.delete(h) : state.watch.add(h);
@@ -419,10 +537,17 @@ document.addEventListener('click', async (e) => {
     const d = dealCache.get(t.dataset.ics);
     if (d) downloadICS(d);
   } else if (t.dataset.del) {
-    if (!confirm('이 공구를 삭제할까요?')) return;
+    if (!(await ask('이 공구를 삭제할까요?', '삭제'))) return;
     try { await api(`/api/deals/${t.dataset.del}`, { method: 'DELETE' }); toast('삭제했어요.'); await refreshMeta(); render(); } catch (ex) { toast(ex.message); }
   } else if (t.dataset.approve) {
     try { await api(`/api/deals/${t.dataset.approve}`, { method: 'PATCH', body: { review: 'published' } }); toast('게시했어요.'); await refreshMeta(); render(); } catch (ex) { toast(ex.message); }
+  } else if (t.dataset.accTab) {
+    accTab = t.dataset.accTab;
+    render();
+  } else if (t.dataset.acc) {
+    try { await api('/api/accounts', { method: 'POST', body: { handle: t.dataset.acc, status: t.dataset.accStatus } }); toast('바꿨어요.'); render(); } catch (ex) { toast(ex.message); }
+  } else if (t.dataset.collect !== undefined) {
+    try { await api('/api/collect', { method: 'POST' }); toast('수집을 시작했어요.'); render(); } catch (ex) { toast(ex.message); }
   } else if (t.dataset.showEnded !== undefined) {
     state.showEnded = true;
     $('#show-ended').checked = true;
@@ -447,7 +572,7 @@ $('#asof').addEventListener('change', async (e) => {
   render();
 });
 $('#del-samples').addEventListener('click', async () => {
-  if (!confirm('샘플 데이터를 모두 삭제할까요?')) return;
+  if (!(await ask('샘플 데이터를 모두 삭제할까요?', '삭제'))) return;
   try { const r = await api('/api/samples', { method: 'DELETE' }); toast(`샘플 ${r.deleted}건을 삭제했어요.`); await refreshMeta(); render(); } catch (ex) { toast(ex.message); }
 });
 $('#subscribe').addEventListener('click', () => {
@@ -476,5 +601,6 @@ $('#admin-btn').addEventListener('click', () => {
 window.addEventListener('hashchange', () => { window.scrollTo(0, 0); render(); });
 
 // ---------- 시작 ----------
+if (DEMO) $('#subscribe').hidden = true;
 renderCats();
 refreshMeta().then(render).catch((e) => { $('#view').innerHTML = html`<div class="empty">서버에 연결하지 못했어요. (${e.message})</div>`[RAW]; });

@@ -16,16 +16,25 @@
   --star: #f5a623;
   --radius: 14px;
   --shadow: 0 1px 2px rgba(60, 30, 10, .05), 0 4px 14px rgba(60, 30, 10, .05);
-  color-scheme: light dark;
+  color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg: #1b1715; --card: #26201d; --ink: #f3ece7; --muted: #a99d95; --line: #3a312c;
     --brand: #ff8a65; --brand-ink: #ffb199; --brand-soft: #3b2820;
     --ongoing: #4cc98d; --ongoing-soft: #1d3a2c; --upcoming: #7fa6ff; --upcoming-soft: #1e2a45;
     --ended: #8a807a; --ended-soft: #2e2724;
     --shadow: none;
   }
+}
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #1b1715; --card: #26201d; --ink: #f3ece7; --muted: #a99d95; --line: #3a312c;
+    --brand: #ff8a65; --brand-ink: #ffb199; --brand-soft: #3b2820;
+    --ongoing: #4cc98d; --ongoing-soft: #1d3a2c; --upcoming: #7fa6ff; --upcoming-soft: #1e2a45;
+    --ended: #8a807a; --ended-soft: #2e2724;
+    --shadow: none;
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -36,10 +45,10 @@ body {
 }
 a { color: inherit; }
 button, input, select, textarea { font: inherit; color: inherit; }
-.wrap { max-width: 920px; margin: 0 auto; padding: 0 16px; }
+.wrap { max-width: 920px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
 
 /* header */
-.top { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+.top { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 10; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
 .top-inner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; padding-bottom: 6px; }
 .logo { font-weight: 800; font-size: 18px; text-decoration: none; letter-spacing: -.02em; }
 .asof { position: relative; font-size: 13px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }

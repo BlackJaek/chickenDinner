@@ -2,7 +2,6 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/server.js';
 import { dealStatus, dday } from '../public/lib/dates.js';
-import { extractDeals } from '../scripts/collect-instagram.js';
 
 const NOW = () => new Date('2026-11-08T03:00:00Z'); // KST 11/8 낮
 let base, server, store;
@@ -18,7 +17,7 @@ async function call(path, { method = 'GET', body, token } = {}) {
 }
 
 before(async () => {
-  ({ server, store } = createApp({ dbFile: ':memory:', now: NOW, adminToken: 'secret' }));
+  ({ server, store } = createApp({ dbFile: ':memory:', now: NOW, adminToken: 'secret', seedAccountsFile: '' }));
   await new Promise((r) => server.listen(0, r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -122,15 +121,16 @@ test('정적 파일 + 경로 탈출 차단', async () => {
   assert.notEqual((await call('/%2e%2e/src/db.js')).status, 200);
 });
 
-test('수집기: 공구 게시물만 추려서 후보로', () => {
-  const media = [
-    { caption: '[예시 떡뻥] 공구 오픈!\n11/10 ~ 11/13\n공구가 8,900원', permalink: 'https://www.instagram.com/p/AAA/', timestamp: '2026-11-07T10:00:00+0000' },
-    { caption: '오늘 아기랑 산책했어요', permalink: 'https://www.instagram.com/p/BBB/', timestamp: '2026-11-07T10:00:00+0000' },
-    { caption: '[옛날 공구] 공구 오픈 9/1 ~ 9/3', permalink: 'https://www.instagram.com/p/CCC/', timestamp: '2026-08-30T10:00:00+0000' },
-  ];
-  const out = extractDeals('mom_x', media, '2026-11-08');
-  assert.equal(out.length, 1);
-  assert.equal(out[0].product_name, '예시 떡뻥');
-  assert.equal(out[0].start_date, '2026-11-10');
-  assert.equal(out[0].price, 8900);
+test('시드 계정 파일: 추적 목록에 들어가고, 사용자가 바꾼 상태는 유지', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(tmpdir() + '/gonggu-');
+  const file = dir + '/seeds.txt';
+  writeFileSync(file, '# 주석\n@mom_a\nmom_b  # 메모\n잘못된계정\n');
+  const db = dir + '/t.db';
+  const a = createApp({ dbFile: db, seedAccountsFile: file, seed: false, igClient: null });
+  assert.deepEqual(a.store.trackedHandles(), ['mom_a', 'mom_b']);
+  a.store.setAccountStatus('mom_b', 'ignored');
+  const b = createApp({ dbFile: db, seedAccountsFile: file, seed: false, igClient: null });
+  assert.equal(b.store.getAccount('mom_b').status, 'ignored');
 });
